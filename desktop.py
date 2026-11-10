@@ -224,6 +224,8 @@ class HarnessApp:
         # 已退出进程用灰色，一眼区分
         self.tree.tag_configure("exited", foreground=COLORS["fg_dim"])
         self.tree.tag_configure("alive", foreground=COLORS["fg"])
+        # 已停止的 harness（本次运行没有活跃进程，但有历史）
+        self.tree.tag_configure("stopped", foreground=COLORS["fg_dim"])
         self.tree.bind("<Double-1>", self._toggle_expand)
         self.tree.bind("<Button-1>", self._on_click)
 
@@ -500,98 +502,136 @@ class HarnessApp:
         )
 
     def _refresh_tree(self, snap: Snapshot | None, force: bool = False) -> None:
+        """渲染 harness 列表。
+
+        数据来源是两个集合的并集：
+          1. 本次运行实时采到的（snap.aggs，含速率）
+          2. 数据库里的历史汇总（store.harness_summary）
+
+        只显示集合 1 是错的——应用一关，它就从界面上消失，用户会以为数据丢了。
+        实际上进程退出前的读数已经在 proc_runs 里，必须读出来展示。
+        """
         if snap is None:
             return
         since = self._range_since()
         range_sum = self.store.sum_since(since) if since > 0 else {}
+        try:
+            history = self.store.harness_summary()
+        except Exception:
+            history = {}
 
-        rows = []
-        active_hids = set()
+        rows = []   # (hid, rule, agg|None, range_bytes, lifetime, alive_n, exited_n)
+        seen_hids: set[str] = set()
+
+        # --- 1. 本次运行有活跃进程的 ---
         for hid, a in snap.aggs.items():
             rule = self.clf.by_id.get(hid)
             if rule is None:
                 continue
             if rule.is_ide and not self.show_ide:
                 continue
-            # 生命周期累计：内存实时值 vs 库里已存的，取大者
-            life = max(a.lifetime_write, self._lifetime_cache.get(hid, 0))
-            rows.append((hid, rule, a, range_sum.get(hid, a.dw), life))
-            active_hids.add(hid)
+            h = history.get(hid, {})
+            life = max(a.lifetime_write, h.get("write_bytes", 0))
+            rows.append((
+                hid, rule, a,
+                range_sum.get(hid, a.dw),
+                life,
+                a.procs,
+                h.get("exited", 0),
+            ))
+            seen_hids.add(hid)
 
-        # 本期已无活跃进程、但本轮有进程退出的 harness 也要显示，
-        # 否则用户看不到「它刚才退出前写了多少」
-        exited_only: dict[str, list] = {}
-        for e in snap.exited:
-            if e.harness in active_hids:
+        # --- 2. 数据库里有历史、但本次运行没有活跃进程的 ---
+        # 这些是「已经关掉的 agent」，仍然要显示，否则用户以为历史没了
+        for hid, h in history.items():
+            if hid in seen_hids:
                 continue
-            rule = self.clf.by_id.get(e.harness)
-            if rule is None or (rule.is_ide and not self.show_ide):
+            rule = self.clf.by_id.get(hid)
+            if rule is None:
                 continue
-            exited_only.setdefault(e.harness, []).append(e)
-
-        for hid, items in exited_only.items():
-            rule = self.clf.by_id[hid]
-            gone_life = sum(e.write_bytes for e in items)
-            life = max(gone_life, self._lifetime_cache.get(hid, 0))
-            empty = HarnessAgg(harness=hid)
-            rows.append((hid, rule, empty, 0, life))
+            if rule.is_ide and not self.show_ide:
+                continue
+            if h.get("write_bytes", 0) <= 0 and not h.get("exited"):
+                continue
+            rows.append((
+                hid, rule, None,
+                range_sum.get(hid, 0),
+                h.get("write_bytes", 0),
+                h.get("alive", 0),
+                h.get("exited", 0),
+            ))
 
         rows.sort(key=lambda r: -r[4])   # 按生命周期累计排序
 
-        # 重建树（保持展开状态）
         for item in self.tree.get_children(""):
             self.tree.delete(item)
 
-        for hid, rule, a, rng, life in rows:
-            label = rule.display + ("  (IDE)" if rule.is_ide else "")
-            gone_n = sum(1 for e in snap.exited if e.harness == hid)
-            proc_n = f"{a.procs}"
-            if gone_n:
-                proc_n += f" (+{gone_n} 退出)"
+        for hid, rule, a, rng, life, alive_n, exited_n in rows:
+            is_live = a is not None and alive_n > 0
+            label = rule.display + ("  [IDE]" if rule.is_ide else "")
+            if not is_live:
+                label += "  · 已停止"
+
+            rate = human_rate(a.write_bps) if (a and is_live) else "—"
+            proc_n = str(alive_n)
+            if exited_n:
+                proc_n += f" (+{exited_n} 退出)"
+
             self.tree.insert(
                 "", "end", iid=hid, text=label,
-                values=(
-                    human_rate(a.write_bps),
-                    human(life),
-                    human(rng),
-                    proc_n,
-                ),
-                tags=(hid,),
+                values=(rate, human(life), human(rng), proc_n),
+                tags=(hid,) if is_live else ("stopped",),
             )
-            if hid in self.expanded:
-                # 活跃进程
-                procs = [c for c in snap.processes if c.harness == hid]
-                procs.sort(key=lambda c: -c.proc.write_bytes)
 
-                # 已退出进程（带标记保留在列表里）
-                gone = [e for e in snap.exited if e.harness == hid]
-                gone.sort(key=lambda e: -e.write_bytes)
+            if hid not in self.expanded:
+                continue
 
-                for c in procs[:40]:
+            # 展开：活跃进程在前，已退出在后
+            live_procs = [c for c in snap.processes if c.harness == hid]
+            live_procs.sort(key=lambda c: -c.proc.write_bytes)
+            for c in live_procs[:40]:
+                self.tree.insert(
+                    hid, "end",
+                    text=f"    ● {c.proc.exe}  #{c.proc.pid}",
+                    values=("", human(c.proc.write_bytes), "", c.via),
+                    tags=("alive",),
+                )
+
+            # 已退出：先取本次运行内存里的，再从数据库补历史
+            gone_mem = [e for e in snap.exited if e.harness == hid]
+            gone_mem.sort(key=lambda e: -e.write_bytes)
+            shown_pids = set()
+            for e in gone_mem[:40]:
+                when = datetime.fromtimestamp(e.exited_at).strftime("%H:%M:%S")
+                self.tree.insert(
+                    hid, "end",
+                    text=f"    ○ {e.exe}  #{e.pid}   已退出 {when}",
+                    values=("已退出", human(e.write_bytes), "", ""),
+                    tags=("exited",),
+                )
+                shown_pids.add((e.pid, e.create_time))
+
+            if force or len(gone_mem) < 40:
+                try:
+                    db_procs = self.store.processes_of(hid, limit=200)
+                except Exception:
+                    db_procs = []
+                added = 0
+                for p in db_procs:
+                    if added >= 40:
+                        break
+                    if p["alive"]:
+                        continue
+                    if (p["pid"], p["create_time"]) in shown_pids:
+                        continue
+                    when = datetime.fromtimestamp(p["last_seen"]).strftime("%m-%d %H:%M")
                     self.tree.insert(
                         hid, "end",
-                        text=f"    ● {c.proc.exe}  #{c.proc.pid}",
-                        values=(
-                            human_rate(0) if False else "",
-                            human(c.proc.write_bytes),
-                            "",
-                            c.via,
-                        ),
-                        tags=("alive",),
-                    )
-                for e in gone[:40]:
-                    when = datetime.fromtimestamp(e.exited_at).strftime("%H:%M:%S")
-                    self.tree.insert(
-                        hid, "end",
-                        text=f"    ○ {e.exe}  #{e.pid}   已退出 {when}",
-                        values=(
-                            "已退出",
-                            human(e.write_bytes),
-                            "",
-                            f"{e.write_bytes / 1048576:.1f} MB",
-                        ),
+                        text=f"    ○ {p['exe']}  #{p['pid']}   最后 {when}",
+                        values=("已退出", human(p["write_bytes"]), "", ""),
                         tags=("exited",),
                     )
+                    added += 1
 
     def _draw_chart(self) -> None:
         cv = self.canvas

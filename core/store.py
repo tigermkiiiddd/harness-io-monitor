@@ -254,6 +254,45 @@ class Store:
             row = self.conn.execute("SELECT COUNT(*) n FROM proc_runs").fetchone()
         return int(row["n"])
 
+    def harness_summary(self) -> dict[str, dict]:
+        """按 harness 汇总所有历史记录，用于界面上「不因应用关闭而消失」的展示。
+
+        返回：
+            write_bytes  所有被观测进程的 lifetime 累计之和
+            alive        当前仍存活的进程数
+            exited       已退出的进程数
+            last_seen    最后一次见到该 harness 的时间
+        """
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT harness, "
+                "       SUM(write_bytes) w, "
+                "       SUM(CASE WHEN alive=1 THEN 1 ELSE 0 END) n_alive, "
+                "       SUM(CASE WHEN alive=0 THEN 1 ELSE 0 END) n_dead, "
+                "       MAX(last_seen) last "
+                "FROM proc_runs GROUP BY harness"
+            ).fetchall()
+        return {
+            r["harness"]: {
+                "write_bytes": int(r["w"] or 0),
+                "alive": int(r["n_alive"] or 0),
+                "exited": int(r["n_dead"] or 0),
+                "last_seen": r["last"] or 0.0,
+            }
+            for r in rows
+        }
+
+    def processes_of(self, harness: str, limit: int = 600) -> list[dict]:
+        """某 harness 名下的进程记录（含已退出），按写入量降序。"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT pid, create_time, exe, path, cmdline, first_seen, last_seen, "
+                "       read_bytes, write_bytes, alive "
+                "FROM proc_runs WHERE harness=? ORDER BY write_bytes DESC LIMIT ?",
+                (harness, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ---------- 维护 ----------
 
     # 不做自动清理。历史一律保留，只在用户手动点「清除数据」时删除。
