@@ -1,0 +1,27 @@
+{
+  "_说明": "同 id 覆盖内置规则的字段；新 id 追加自定义 harness。__order__ 调匹配优先级（数字越小越先匹配）。改完重启程序生效。",
+
+  "_内置顺序说明": [
+    "claude-code 必须排在 claude-desktop 前：Claude Desktop 自带 CLI，在 Roaming/Claude/claude-code/ 下",
+    "chatgpt 必须排在 codex-cli 前：ChatGPT 桌面的 MSIX 包名是 OpenAI.Codex_*",
+    "antigravity 必须排在 gemini-cli 前：Antigravity 的 sidecar 路径含 .gemini"
+  ],
+
+  "_example_dev_repo": {
+    "__comment": "如果你的某个 harness 是从源码仓库跑的（dev 版而非安装版），把仓库根目录写进 repo_paths。程序会先解析 junction/symlink 再用真实路径匹配。",
+    "repo_paths": ["D:\\code\\my-agent-repo"]
+  },
+
+  "cursor": {
+    "show_by_default": false
+  },
+  "windsurf": {
+    "show_by_default": false
+  },
+  "vscode": {
+    "show_by_default": false
+  },
+  "zed": {
+    "show_by_default": false
+  }
+}

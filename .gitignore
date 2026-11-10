@@ -1,0 +1,26 @@
+# 数据与本地配置，不进版本库
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 本机实际配置（含个人路径）。仓库里只有 harnesses.example.json
+harnesses.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行产物
+run.log
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
