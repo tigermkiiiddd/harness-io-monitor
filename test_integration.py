@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from core.classify import Classifier, HarnessRule  # noqa: E402
+from core.dataguard import assert_not_user_data    # noqa: E402
 from core.sampler import Sampler                    # noqa: E402
 from core.store import Store                        # noqa: E402
 
@@ -236,6 +237,8 @@ def main() -> int:
     print("=" * 62)
     with tempfile.TemporaryDirectory(prefix="hio-test-") as td:
         tmp = Path(td)
+        # 硬保护：确认测试目录不是用户的 data/
+        assert_not_user_data(tmp)
         results = [
             test_single_write(tmp),
             test_restart_accumulation(tmp),

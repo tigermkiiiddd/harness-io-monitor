@@ -64,6 +64,8 @@ class Snapshot:
     sample_ms: float
     admin: bool = False
     exited: list["ExitedProc"] = field(default_factory=list)   # 已退出（保留展示）
+    # 每块盘的累计写入量快照：device_id -> bytes
+    disk_written: dict[str, int] = field(default_factory=dict)
 
     def total_bps(self) -> float:
         return sum(a.write_bps for a in self.aggs.values())
@@ -143,6 +145,12 @@ class Sampler:
         self._latest: Snapshot | None = None
         self._last_persist = time.time()
         self._dirty = False          # 有待落库的增量
+
+        # 磁盘 SMART 轮询。SMART 是内存映射读寄存器，不写闪存，
+        # 和进程采样同频（每秒）也不会伤盘。
+        self.read_disks = False       # 由 GUI 在拿到权限后开启
+        self._disks_cache: list = []
+        self._disk_written: dict[str, int] = {}
 
     # ---------- 控制 ----------
 
@@ -301,12 +309,28 @@ class Sampler:
         if len(self._exited) > EXITED_KEEP:
             del self._exited[:-EXITED_KEEP]
 
+        # ---- 磁盘 SMART 轮询（与进程采样同频）----
+        # 只在 GUI 确认有管理员权限后开启（read_disks）。
+        # 每块 NVMe 一次 IOCTL，7 块盘约 2-3 ms，可以跟着每秒跑。
+        if self.read_disks:
+            try:
+                from . import smart
+                self._disks_cache = smart.read_disks(fast=True)
+                self._disk_written = {
+                    d.device_id: int(d.data_written_bytes)
+                    for d in self._disks_cache
+                    if d.data_written_bytes is not None
+                }
+            except Exception:
+                pass
+
         snap = Snapshot(
             ts=now,
             aggs=aggs,
             processes=classified,
             sample_ms=elapsed * 1000,
             exited=list(reversed(self._exited)),
+            disk_written=dict(self._disk_written),
         )
         with self._lock:
             self._latest = snap

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN" data-mode="full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness I/O</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ========== 顶栏：KPI + 磁盘预览 + 操作 ========== -->
+  <header class="top">
+    <div class="kpi kpi-rate">
+      <span class="live-dot" aria-hidden="true"></span>
+      <span class="kpi-value" id="rate">—</span>
+      <svg class="kpi-spark" id="rateSpark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+
+    <div class="kpi-group">
+      <div class="kpi"><span class="kpi-label">今日写入</span><span class="kpi-num" id="today">—</span></div>
+      <div class="kpi"><span class="kpi-label">活跃</span><span class="kpi-num" id="active">—</span></div>
+    </div>
+
+    <div class="disk-chips" id="diskChips" role="button" tabindex="0" title="磁盘寿命 · 点开看详情"></div>
+
+    <div class="top-actions">
+      <button class="icon-btn" id="btnPause" title="暂停采样" aria-label="暂停采样">
+        <svg viewBox="0 0 16 16"><rect x="4" y="3" width="2.5" height="10" rx="1"/><rect x="9.5" y="3" width="2.5" height="10" rx="1"/></svg>
+      </button>
+      <button class="icon-btn" id="btnMini" title="极简模式" aria-label="极简模式">
+        <svg viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="8" y="8" width="4" height="3" rx=".8"/></svg>
+      </button>
+      <button class="icon-btn" id="btnMenu" title="更多" aria-label="更多">
+        <svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="12.5" cy="8" r="1.4"/></svg>
+      </button>
+      <div class="menu" id="menu" hidden>
+        <label class="menu-item"><input type="checkbox" id="optIde"> 显示 IDE 进程</label>
+        <label class="menu-item" id="optTaskRow"><input type="checkbox" id="optTask"> 免授权启动</label>
+        <div class="menu-item menu-row">采样间隔
+          <select id="optInterval"><option>0.5 秒</option><option selected>1 秒</option><option>2 秒</option><option>5 秒</option></select>
+        </div>
+        <hr>
+        <button class="menu-item" id="btnExport">导出 CSV</button>
+        <button class="menu-item danger" id="btnReset">清除数据…</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ========== 区间条 ========== -->
+  <nav class="rangebar">
+    <div class="seg" id="ranges" role="tablist"></div>
+    <span class="status" id="status"></span>
+  </nav>
+
+  <!-- ========== 主区：排行 + 曲线（自适应） ========== -->
+  <main class="main">
+    <section class="card list-card">
+      <div class="list-head">
+        <span>Agent</span><span class="num">速率</span><span class="num">区间</span><span class="num col-life">累计</span>
+      </div>
+      <ul class="agents" id="agents"></ul>
+    </section>
+
+    <section class="card chart-card">
+      <div class="chart-legend" id="legend"></div>
+      <div class="chart-wrap">
+        <svg class="chart" id="chart" preserveAspectRatio="none"></svg>
+        <div class="tip" id="tip" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========== 极简模式 ========== -->
+  <div class="mini" id="mini">
+    <div class="mini-head">
+      <span class="live-dot"></span>
+      <span class="mini-rate" id="miniRate">—</span>
+      <span class="mini-today" id="miniToday"></span>
+      <button class="icon-btn mini-pin" id="btnPin" title="置顶"><svg viewBox="0 0 16 16"><path d="M9.8 2.2 13.8 6.2 11.9 6.9 9.6 9.2 9.9 12.3 8.7 13.5 6.1 10.9 3.3 13.7 2.3 12.7 5.1 9.9 2.5 7.3 3.7 6.1 6.8 6.4 9.1 4.1z"/></svg></button>
+      <button class="icon-btn" id="btnFull" title="展开"><svg viewBox="0 0 16 16"><path d="M3 9.5V13h3.5M13 6.5V3H9.5M3 13l4-4M13 3 9 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+    </div>
+    <svg class="mini-spark" id="miniSpark" viewBox="0 0 300 34" preserveAspectRatio="none"></svg>
+    <ul class="mini-agents" id="miniAgents"></ul>
+    <div class="disk-chips mini-disks" id="miniDisks"></div>
+  </div>
+
+  <!-- ========== 磁盘详情抽屉 ========== -->
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <h2>磁盘寿命</h2>
+        <p class="sub" id="drawerSub"></p>
+      </div>
+      <div class="seg seg-sm" id="overlaySeg">
+        <button data-v="split" class="on">分开</button>
+        <button data-v="overlay">叠加</button>
+      </div>
+      <button class="icon-btn" id="btnCloseDrawer" aria-label="关闭"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+    </div>
+    <div class="overlay-chart">
+      <svg class="chart" id="diskBig" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="disk-list" id="diskList"></div>
+    <p class="foot-note">寿命下降按这块盘自己的历史估算：由累计写入量和剩余寿命算出每 1% 寿命对应的写入量，再用区间写入量换算。SMART 只给整数百分比，短区间内剩余寿命读数本身不会动。</p>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+</div>
+<script src="mock.js"></script>
+<script src="bridge.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

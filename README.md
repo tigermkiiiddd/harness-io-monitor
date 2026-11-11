@@ -47,7 +47,8 @@ Cursor、Z Code、Qoder 时，你真正想知道的是 **哪个 agent 写了多�
 - **能识别 dev 版本** — 自动解析 junction / symlink，按仓库根目录匹配从源码运行的 agent
 - **已退出进程保留** — 标 `○` 灰色显示，退出后仍留一行，能看到它最终写了多少
 - **历史持久化** — SQLite。内存持续更新、20 分钟落一次库、关闭时强制 flush
-- **零依赖** — 纯标准库（ctypes / sqlite3 / tkinter），不需要 pip install
+- **界面** — pywebview 外壳 + 纯 HTML/CSS/JS 设计稿（Windows 下走 Edge WebView2），支持极简模式与磁盘寿命面板
+- **依赖** — 标准库之外只需 `pip install pywebview`
 - **不联网** — 不发送任何数据
 
 ---
@@ -60,19 +61,35 @@ Cursor、Z Code、Qoder 时，你真正想知道的是 **哪个 agent 写了多�
 git clone <repo-url>
 cd harness-io-monitor
 
-python probe.py        # 1. 探测本机装了哪些 agent
-python desktop.py      # 2. 启动
+pip install pywebview  # 1. 界面依赖（Windows 自带 Edge WebView2，无需另装）
+
+python probe.py        # 2. 探测本机装了哪些 agent
+python app.py         # 3. 启动
 ```
 
-或者双击 `launch.bat`（用 pythonw 启动，无控制台窗口）。
+或者双击 `launch.bat`（经 pythonw 运行启动器 `launcher.pyw`，无控制台窗口）。
 
-创建桌面快捷方式：
+创建桌面快捷方式（指向 `launcher.pyw`，经 pythonw 启动）：
 
 ```bash
 python install_shortcut.py
 ```
 
-> 管理员权限不是必需的，但用管理员运行能看到更多系统进程。
+关闭窗口 = 收进托盘继续采样；托盘右键「退出」才真正退出。
+
+> 管理员权限不是必需的，但用管理员运行能看到更多系统进程，也才能读磁盘寿命。非管理员启动时程序会请求提权一次。
+
+### 免授权启动（不再每次弹 UAC）
+
+第一次启动时会弹一次 UAC。提权成功后，程序在「任务计划程序」里登记一个按需任务 `HarnessIOMonitor`：
+
+- **没有任何触发器**：不按时间、不在登录或开机时运行，**不会开机自启**，只能被启动器手动触发；
+- 以最高权限、仅在你登录时交互运行，动作是 `pythonw.exe "<仓库>\app.py" --from-task`；
+- 不限运行时长，用电池时照常运行，已在运行时不会再开新实例。
+
+之后从快捷方式或 `launch.bat` 启动时，启动器直接触发这个任务：不弹 UAC，也不出现黑窗。仓库搬了位置时，启动器会发现任务已经失效，改为直接启动（再弹一次 UAC），程序随后自动重新登记。
+
+**关闭 / 卸载**：在菜单「更多」里取消勾选「免授权启动」，任务会被删除，之后也不会再自动登记，想恢复时重新勾选即可。也可以在任务计划程序里手动删除 `HarnessIOMonitor`，但只要程序再以管理员身份启动，就会把它重新登记回来；想永久关闭请用菜单开关。
 
 ---
 
@@ -210,20 +227,28 @@ python test_integration.py               # 集成测试
 
 ```
 harness-io-monitor/
-├── desktop.py              主程序（tkinter 桌面窗口）
+├── app.py                  主程序（pywebview 窗口 + 托盘 + 快照推送）
+├── launcher.pyw            启动器（激活已有实例 / 触发免授权启动任务 / 退回直接启动）
 ├── probe.py                环境探测
 ├── verify.py               精度交叉验证
 ├── test_integration.py     集成测试
 ├── migrate_agents.py       辅助：把 agent 数据目录迁到别的盘（junction）
 ├── install_shortcut.py     创建桌面快捷方式
-├── launch.bat     双击启动
+├── launch.bat              双击启动（pythonw → launcher.pyw）
 ├── harnesses.example.json  归因规则模板
+├── ui/                     界面：设计稿 index.html / app.css / app.js，bridge.js（pywebview 桥），mock.js（浏览器预览用假数据）
+├── tests/                  pytest 单测（test_snapshot / test_diskinfo / test_schtask）
 └── core/
     ├── winproc.py          ctypes 进程枚举与 IO 计数器
     ├── pathreal.py         junction / symlink 真实路径还原
     ├── classify.py         归因规则
     ├── store.py            SQLite 持久化
-    └── sampler.py          采样循环
+    ├── sampler.py          采样循环
+    ├── snapshot.py         快照构建（寿命下降估算、区间重采样，纯逻辑可单测）
+    ├── smart.py / nvme.py  磁盘健康读取
+    ├── tray.py             托盘图标（独立线程消息循环）
+    ├── schtask.py          免授权启动的按需计划任务（任务计划 COM，ctypes）
+    └── single.py           单实例锁 + 「显示主窗口」信号
 ```
 
 ---

@@ -52,6 +52,27 @@ CREATE TABLE IF NOT EXISTS samples (
 );
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 
+CREATE TABLE IF NOT EXISTS disk_health (
+    ts           REAL    NOT NULL,
+    device_id    TEXT    NOT NULL,
+    name         TEXT    NOT NULL DEFAULT '',
+    media_type   TEXT    NOT NULL DEFAULT '',
+    size_bytes   INTEGER NOT NULL DEFAULT 0,
+    health       TEXT    NOT NULL DEFAULT '',
+    wear         INTEGER,
+    temperature  INTEGER,
+    temp_max     INTEGER,
+    power_hours  INTEGER,
+    read_errors  INTEGER,
+    write_errors INTEGER,
+    cycles       INTEGER,
+    written      INTEGER,
+    spare        INTEGER,
+    media_errors INTEGER,
+    source       TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (ts, device_id)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -91,6 +112,20 @@ class Store:
     def _migrate(self) -> None:
         """兼容旧库：补 kind 列、把唯一索引改成 (pid, create_time)。"""
         with self._lock:
+            # disk_health 新增列（旧库升级）
+            try:
+                dcols = {
+                    r["name"]
+                    for r in self.conn.execute("PRAGMA table_info(disk_health)").fetchall()
+                }
+                for col in ("written", "spare", "media_errors"):
+                    if col not in dcols:
+                        self.conn.execute(
+                            f"ALTER TABLE disk_health ADD COLUMN {col} INTEGER"
+                        )
+            except Exception:
+                pass
+
             # samples.kind
             cols = {
                 r["name"]
@@ -292,6 +327,56 @@ class Store:
                 (harness, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---------- 磁盘健康度 ----------
+
+    def add_disk_health(self, ts: float, disks: list[dict]) -> None:
+        """写入一次磁盘健康度快照。disks 是 dict 列表。"""
+        if not disks:
+            return
+        with self._lock:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO disk_health"
+                "(ts,device_id,name,media_type,size_bytes,health,wear,temperature,"
+                " temp_max,power_hours,read_errors,write_errors,cycles,"
+                " written,spare,media_errors,source) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        ts, str(d.get("device_id", "")), d.get("name", ""),
+                        d.get("media_type", ""), int(d.get("size_bytes") or 0),
+                        d.get("health_status", ""), d.get("wear"),
+                        d.get("temperature"), d.get("temperature_max"),
+                        d.get("power_on_hours"), d.get("read_errors"),
+                        d.get("write_errors"), d.get("start_stop_cycles"),
+                        d.get("data_written_bytes"), d.get("available_spare"),
+                        d.get("media_errors"), d.get("source", ""),
+                    )
+                    for d in disks
+                ],
+            )
+            self.conn.commit()
+
+    def latest_disk_health(self) -> list[dict]:
+        """每块盘最新一条记录。"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT d.* FROM disk_health d "
+                "JOIN (SELECT device_id, MAX(ts) mts FROM disk_health GROUP BY device_id) x "
+                "  ON d.device_id = x.device_id AND d.ts = x.mts "
+                "ORDER BY CAST(d.device_id AS INTEGER)"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def disk_health_history(self, device_id: str, limit: int = 500) -> list[dict]:
+        """某块盘的健康度历史，用于看磨损趋势。"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM disk_health WHERE device_id=? "
+                "ORDER BY ts DESC LIMIT ?",
+                (str(device_id), limit),
+            ).fetchall()
+        return [dict(r) for r in reversed(rows)]
 
     # ---------- 维护 ----------
 

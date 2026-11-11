@@ -107,17 +107,32 @@ def move_one(src: Path, dest: Path, label: str) -> tuple[bool, str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
+        # /MOVE 与 /MT 互斥，所以先多线程 COPY，验证通过后再删源。
+        # 2 万个小文件时 /MT:32 能显著缩短耗时。
         "robocopy", str(src), str(dest),
-        "/E", "/MOVE", "/R:1", "/W:1",
+        "/E", "/MT:32", "/R:1", "/W:1",
         "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
     ]
-    print("  moving...")
+    print("  copying (multi-thread)...")
     r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     # robocopy: 0-7 视为成功，>=8 是错误
     if r.returncode >= 8:
         print(f"  robocopy rc={r.returncode}")
         print(r.stdout[-1500:])
         return False, f"robocopy failed rc={r.returncode}"
+
+    # COPY 成功后，确认目标完整再删源（而不是让 /MOVE 自己删）
+    size_after, _ = dir_bytes(dest)
+    if size_src and size_after / size_src < 0.98:
+        return False, f"copy incomplete: src={size_src} dest={size_after}"
+    print("  removing source...")
+    r2 = subprocess.run(
+        ["cmd", "/c", "rmdir", "/S", "/Q", str(src)],
+        capture_output=True, text=True, errors="replace",
+    )
+    if src.exists():
+        leftovers = [x.name for x in list(src.iterdir())[:5]] if src.exists() else []
+        return False, f"source not removed: {leftovers}"
 
     # /MOVE 之后源目录可能还留空壳
     if src.exists():
@@ -160,6 +175,12 @@ TASKS = [
      ROOT_DEST / ".local/share/opencode"),
     ("OpenCode Roaming", APPDATA / "ai.opencode.desktop",
      ROOT_DEST / "AppData/Roaming/ai.opencode.desktop"),
+    ("DeepSeek Harness .dsh", HOME / ".dsh", ROOT_DEST / ".dsh"),
+    # Antigravity 的数据全在 .gemini 下（antigravity / backup / browser-profile / cli / ide）。
+    # 注意：%LOCALAPPDATA%\Programs\Antigravity 是程序本体，不迁移。
+    ("Antigravity .gemini", HOME / ".gemini", ROOT_DEST / ".gemini"),
+    ("Antigravity Roaming", APPDATA / "Antigravity",
+     ROOT_DEST / "AppData/Roaming/Antigravity"),
 ]
 
 
